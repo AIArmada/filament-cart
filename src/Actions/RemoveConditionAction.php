@@ -4,9 +4,8 @@ declare(strict_types=1);
 
 namespace AIArmada\FilamentCart\Actions;
 
-use AIArmada\FilamentCart\Models\Cart as CartModel;
 use AIArmada\FilamentCart\Models\CartCondition;
-use AIArmada\FilamentCart\Services\CartInstanceManager;
+use AIArmada\FilamentCart\Services\OwnerActionGuard;
 use Exception;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Select;
@@ -28,29 +27,17 @@ final class RemoveConditionAction extends Action
             ->modalDescription('Are you sure you want to remove this condition from the cart?')
             ->modalSubmitActionLabel('Remove Condition')
             ->action(function (CartCondition $record): void {
+                $cart = OwnerActionGuard::authorizeCartCondition($record);
+
                 try {
-                    // Get the cart instance
-                    $cart = $record->cart;
-                    $cartInstance = app(CartInstanceManager::class)
-                        ->resolve($cart->instance, $cart->identifier);
+                    $action = app(RemoveConditionFromCartAction::class);
+                    $action->removeCondition($record);
 
-                    if ($record->isItemLevel()) {
-                        // Remove item-level condition
-                        $success = $cartInstance->removeItemCondition($record->item_id, $record->name);
-                    } else {
-                        // Remove cart-level condition
-                        $success = $cartInstance->removeCondition($record->name);
-                    }
-
-                    if ($success) {
-                        Notification::make()
-                            ->title('Condition Removed')
-                            ->body("The '{$record->name}' condition has been removed.")
-                            ->success()
-                            ->send();
-                    } else {
-                        throw new Exception('Condition not found or could not be removed');
-                    }
+                    Notification::make()
+                        ->title('Condition Removed')
+                        ->body("The '{$record->name}' condition has been removed.")
+                        ->success()
+                        ->send();
 
                 } catch (Exception $e) {
                     Notification::make()
@@ -81,22 +68,11 @@ final class RemoveConditionAction extends Action
             ->modalDescription('Are you sure you want to remove all conditions from this cart? This action cannot be undone.')
             ->modalSubmitActionLabel('Clear All Conditions')
             ->action(function ($record, $livewire): void {
-                // Get the cart record - either directly or from relation manager
-                $cart = $record instanceof CartModel ? $record : $livewire->getOwnerRecord();
+                $cart = OwnerActionGuard::resolveCartRecord($record, $livewire);
 
                 try {
-                    // Get the cart instance
-                    $cartInstance = app(CartInstanceManager::class)
-                        ->resolve($cart->instance, $cart->identifier);
-
-                    // Clear all cart-level conditions
-                    $cartInstance->clearConditions();
-
-                    // Clear all item-level conditions
-                    $items = $cartInstance->getItems();
-                    foreach ($items as $item) {
-                        $cartInstance->clearItemConditions($item->id);
-                    }
+                    $action = app(RemoveConditionFromCartAction::class);
+                    $action->clearAll($cart);
 
                     Notification::make()
                         ->title('All Conditions Cleared')
@@ -142,16 +118,11 @@ final class RemoveConditionAction extends Action
                     ->helperText('All conditions of this type will be removed'),
             ])
             ->action(function (array $data, $record, $livewire): void {
-                // Get the cart record - either directly or from relation manager
-                $cart = $record instanceof CartModel ? $record : $livewire->getOwnerRecord();
+                $cart = OwnerActionGuard::resolveCartRecord($record, $livewire);
 
                 try {
-                    // Get the cart instance
-                    $cartInstance = app(CartInstanceManager::class)
-                        ->resolve($cart->instance, $cart->identifier);
-
-                    // Remove conditions by type
-                    $cartInstance->removeConditionsByType($data['type']);
+                    $action = app(RemoveConditionFromCartAction::class);
+                    $action->clearByType($cart, $data['type']);
 
                     Notification::make()
                         ->title('Conditions Cleared')

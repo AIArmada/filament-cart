@@ -7,7 +7,6 @@ namespace AIArmada\FilamentCart\Pages;
 use AIArmada\FilamentCart\Models\Cart;
 use AIArmada\FilamentCart\Widgets\AbandonedCartsWidget;
 use AIArmada\FilamentCart\Widgets\CartStatsOverviewWidget;
-use AIArmada\FilamentCart\Widgets\RecoveryOptimizerWidget;
 use BackedEnum;
 use Filament\Pages\Page;
 use UnitEnum;
@@ -15,13 +14,11 @@ use UnitEnum;
 /**
  * Cart analytics dashboard page.
  *
- * Provides an overview of cart activity, abandonment rates, and recovery.
+ * Provides an overview of cart activity and abandonment.
  */
 class CartDashboard extends Page
 {
     protected static string | BackedEnum | null $navigationIcon = 'heroicon-o-chart-bar';
-
-    protected static string | UnitEnum | null $navigationGroup = 'Commerce';
 
     protected static ?int $navigationSort = 1;
 
@@ -34,6 +31,11 @@ class CartDashboard extends Page
     public static function getNavigationLabel(): string
     {
         return 'Cart Analytics';
+    }
+
+    public static function getNavigationGroup(): string | UnitEnum | null
+    {
+        return config('filament-cart.navigation_group', 'E-Commerce');
     }
 
     public static function getNavigationBadge(): ?string
@@ -73,10 +75,6 @@ class CartDashboard extends Page
     {
         $widgets = [];
 
-        if (config('filament-cart.widgets.recovery_optimizer', true) && config('filament-cart.features.recovery', true)) {
-            $widgets[] = RecoveryOptimizerWidget::class;
-        }
-
         if (config('filament-cart.widgets.abandoned_carts', true) && config('filament-cart.features.abandonment_tracking', true)) {
             $widgets[] = AbandonedCartsWidget::class;
         }
@@ -90,9 +88,8 @@ class CartDashboard extends Page
             return 0;
         }
 
-        return Cart::query()->forOwner()
+        return Cart::query()->forOwner(includeGlobal: Cart::includeGlobalRecords())
             ->whereNotNull('checkout_abandoned_at')
-            ->whereNull('recovered_at')
             ->where('checkout_abandoned_at', '>=', now()->subDay())
             ->count();
     }

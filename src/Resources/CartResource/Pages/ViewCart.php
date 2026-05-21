@@ -6,7 +6,9 @@ namespace AIArmada\FilamentCart\Resources\CartResource\Pages;
 
 use AIArmada\FilamentCart\Models\Cart;
 use AIArmada\FilamentCart\Resources\CartResource;
+use AIArmada\FilamentCart\Services\CartDownloadService;
 use AIArmada\FilamentCart\Services\CartInstanceManager;
+use AIArmada\FilamentCart\Services\OwnerActionGuard;
 use AIArmada\FilamentVouchers\Extensions\CartVoucherActions;
 use AIArmada\FilamentVouchers\Widgets\AppliedVoucherBadgesWidget;
 use AIArmada\FilamentVouchers\Widgets\QuickApplyVoucherWidget;
@@ -59,10 +61,7 @@ final class ViewCart extends ViewRecord
     {
         \assert($this->record instanceof Cart);
 
-        $actions = [
-            Actions\EditAction::make()
-                ->icon(Heroicon::OutlinedPencil),
-        ];
+        $actions = [];
 
         // Add voucher management actions if filament-vouchers is available
         if (class_exists(CartVoucherActions::class)) {
@@ -79,9 +78,9 @@ final class ViewCart extends ViewRecord
             ->modalDescription('Are you sure you want to clear all items from this cart? This action cannot be undone.')
             ->action(function (): void {
                 /** @var Cart $record */
-                $record = $this->record;
+                $record = OwnerActionGuard::resolveCartRecord($this->record);
                 app(CartInstanceManager::class)
-                    ->resolve($record->instance, $record->identifier)
+                    ->resolveForSnapshot($record)
                     ->clear();
                 $this->redirect($this->getResource()::getUrl('view', ['record' => $this->record]));
             })
@@ -93,39 +92,26 @@ final class ViewCart extends ViewRecord
             ->color('info')
             ->action(function () {
                 /** @var Cart $record */
-                $record = $this->record;
+                $record = OwnerActionGuard::resolveCartRecord($this->record);
 
-                return response()->download(
-                    storage_path('app/temp/cart_' . $record->identifier . '.json'),
-                    'cart_' . $record->identifier . '.json',
-                    ['Content-Type' => 'application/json']
-                );
-            })
-            ->before(function (): void {
-                // Create the export file
-                /** @var Cart $record */
-                $record = $this->record;
-                $cartData = [
-                    'identifier' => $record->identifier,
-                    'instance' => $record->instance,
-                    'items' => $record->items,
-                    'conditions' => $record->conditions,
-                    'metadata' => $record->metadata,
-                    'exported_at' => now()->toISOString(),
-                ];
-
-                if (! file_exists(storage_path('app/temp'))) {
-                    mkdir(storage_path('app/temp'), 0755, true);
-                }
-
-                file_put_contents(
-                    storage_path('app/temp/cart_' . $record->identifier . '.json'),
-                    json_encode($cartData, JSON_PRETTY_PRINT)
-                );
+                return app(CartDownloadService::class)->download($record);
             });
 
-        $actions[] = Actions\DeleteAction::make()
-            ->icon(Heroicon::OutlinedTrash);
+        $actions[] = Actions\Action::make('delete_cart')
+            ->label('Delete Cart')
+            ->icon(Heroicon::OutlinedTrash)
+            ->color('danger')
+            ->requiresConfirmation()
+            ->modalHeading('Delete Cart')
+            ->modalDescription('This will delete the live cart and its synchronized snapshot.')
+            ->action(function (): void {
+                /** @var Cart $record */
+                $record = OwnerActionGuard::resolveCartRecord($this->record);
+                app(CartInstanceManager::class)
+                    ->resolveForSnapshot($record)
+                    ->destroy();
+                $this->redirect($this->getResource()::getUrl('index'));
+            });
 
         return $actions;
     }

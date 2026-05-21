@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace AIArmada\FilamentCart\Resources\ConditionResource\Schemas;
 
 use AIArmada\Cart\Contracts\RulesFactoryInterface;
+use AIArmada\Cart\Models\Condition;
+use AIArmada\CommerceSupport\Support\OwnerContext;
+use AIArmada\CommerceSupport\Support\OwnerScopeKey;
 use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\MarkdownEditor;
 use Filament\Forms\Components\Placeholder;
@@ -15,6 +18,7 @@ use Filament\Schemas\Components\Grid;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rules\Unique;
 
 final class ConditionForm
 {
@@ -30,7 +34,9 @@ final class ConditionForm
                                     ->label('Condition Name')
                                     ->required()
                                     ->maxLength(255)
-                                    ->unique(ignoreRecord: true)
+                                    ->unique(ignoreRecord: true, modifyRuleUsing: function (Unique $rule): Unique {
+                                        return $rule->where('owner_scope', self::resolveOwnerScopeKey());
+                                    })
                                     ->placeholder('e.g., Holiday Discount 20%')
                                     ->helperText('A descriptive name for this condition'),
 
@@ -198,5 +204,19 @@ final class ConditionForm
     private static function ruleOptionsHint(): string
     {
         return collect(self::ruleOptions())->keys()->implode(', ');
+    }
+
+    private static function resolveOwnerScopeKey(): string
+    {
+        $owner = Condition::resolveCurrentOwner();
+
+        if (Condition::ownerScopingEnabled()) {
+            OwnerContext::assertResolvedOrExplicitGlobal(
+                $owner,
+                Condition::class . ' requires an owner context or explicit global context.',
+            );
+        }
+
+        return OwnerScopeKey::forOwner($owner);
     }
 }

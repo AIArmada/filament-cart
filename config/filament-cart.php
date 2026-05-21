@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use AIArmada\Cart\Services\BuiltInRulesFactory;
+
 return [
     /*
     |--------------------------------------------------------------------------
@@ -20,6 +22,13 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Integrations
+    |--------------------------------------------------------------------------
+    */
+    'dynamic_rules_factory' => BuiltInRulesFactory::class,
+
+    /*
+    |--------------------------------------------------------------------------
     | Navigation
     |--------------------------------------------------------------------------
     */
@@ -28,8 +37,6 @@ return [
     'resources' => [
         'navigation_sort' => [
             'carts' => 30,
-            'recovery_campaigns' => 40,
-            'recovery_templates' => 41,
         ],
     ],
 
@@ -47,8 +54,6 @@ return [
     */
     'features' => [
         'dashboard' => true,
-        'analytics' => true,
-        'recovery' => true,
         'monitoring' => true,
         'global_conditions' => true,
         'abandonment_tracking' => true,
@@ -57,6 +62,7 @@ return [
     'owner' => [
         'enabled' => env('FILAMENT_CART_OWNER_ENABLED', false),
         'include_global' => env('FILAMENT_CART_OWNER_INCLUDE_GLOBAL', false),
+        'auto_assign_on_create' => env('FILAMENT_CART_OWNER_AUTO_ASSIGN_ON_CREATE', true),
     ],
 
     /*
@@ -67,7 +73,6 @@ return [
     'widgets' => [
         'stats_overview' => true,
         'abandoned_carts' => true,
-        'recovery_optimizer' => true,
     ],
 
     /*
@@ -76,7 +81,7 @@ return [
     |--------------------------------------------------------------------------
     */
     'analytics' => [
-        'high_value_threshold_cents' => 10000,
+        'high_value_threshold_minor' => 10000,
     ],
 
     /*

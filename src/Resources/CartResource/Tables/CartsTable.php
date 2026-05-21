@@ -7,11 +7,11 @@ namespace AIArmada\FilamentCart\Resources\CartResource\Tables;
 use AIArmada\FilamentCart\Models\Cart;
 use AIArmada\FilamentCart\Resources\CartResource;
 use AIArmada\FilamentCart\Services\CartInstanceManager;
+use AIArmada\FilamentCart\Services\OwnerActionGuard;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
 use Filament\Actions\DeleteAction;
-use Filament\Actions\EditAction;
 use Filament\Actions\ViewAction;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\TextColumn;
@@ -23,6 +23,23 @@ use Illuminate\Database\Eloquent\Collection;
 
 final class CartsTable
 {
+    public static function resolvePollingInterval(): string
+    {
+        $interval = config('filament-cart.polling_interval', '30s');
+
+        if (is_int($interval) || is_float($interval)) {
+            return (string) $interval . 's';
+        }
+
+        if (! is_string($interval)) {
+            return '30s';
+        }
+
+        return is_numeric($interval)
+            ? $interval . 's'
+            : $interval;
+    }
+
     public static function configure(Table $table): Table
     {
         return $table
@@ -93,7 +110,7 @@ final class CartsTable
             ->filters([
                 SelectFilter::make('instance')
                     ->options(
-                        fn () => Cart::query()->forOwner()
+                        fn () => Cart::query()->forOwner(includeGlobal: Cart::includeGlobalRecords())
                             ->select('instance')
                             ->distinct()
                             ->orderBy('instance')
@@ -104,7 +121,7 @@ final class CartsTable
 
                 SelectFilter::make('currency')
                     ->options(
-                        fn () => Cart::query()->forOwner()
+                        fn () => Cart::query()->forOwner(includeGlobal: Cart::includeGlobalRecords())
                             ->select('currency')
                             ->distinct()
                             ->orderBy('currency')
@@ -136,9 +153,6 @@ final class CartsTable
                 ViewAction::make()
                     ->icon(Heroicon::OutlinedEye),
 
-                EditAction::make()
-                    ->icon(Heroicon::OutlinedPencil),
-
                 ActionGroup::make([
                     Action::make('clear_cart')
                         ->label('Clear Cart')
@@ -146,8 +160,10 @@ final class CartsTable
                         ->color('danger')
                         ->requiresConfirmation()
                         ->action(function (Cart $record): void {
+                            $cart = OwnerActionGuard::authorizeCart($record);
+
                             app(CartInstanceManager::class)
-                                ->resolve($record->instance, $record->identifier)
+                                ->resolveForSnapshot($cart)
                                 ->clear();
                         })
                         ->visible(fn (Cart $record): bool => $record->items_count > 0)
@@ -161,8 +177,10 @@ final class CartsTable
                     DeleteAction::make()
                         ->icon(Heroicon::OutlinedXMark)
                         ->using(function (Cart $record): void {
+                            $cart = OwnerActionGuard::authorizeCart($record);
+
                             app(CartInstanceManager::class)
-                                ->resolve($record->instance, $record->identifier)
+                                ->resolveForSnapshot($cart)
                                 ->destroy();
                         })
                         ->successNotificationTitle('Cart deleted'),
@@ -179,8 +197,10 @@ final class CartsTable
                     ->action(function (Collection $records): void {
                         /** @var Collection<int|string, Cart> $records */
                         $records->each(function (Cart $record): void {
+                            $cart = OwnerActionGuard::authorizeCart($record);
+
                             app(CartInstanceManager::class)
-                                ->resolve($record->instance, $record->identifier)
+                                ->resolveForSnapshot($cart)
                                 ->clear();
                         });
                     }),
@@ -193,14 +213,16 @@ final class CartsTable
                     ->action(function (Collection $records): void {
                         /** @var Collection<int|string, Cart> $records */
                         $records->each(function (Cart $record): void {
+                            $cart = OwnerActionGuard::authorizeCart($record);
+
                             app(CartInstanceManager::class)
-                                ->resolve($record->instance, $record->identifier)
+                                ->resolveForSnapshot($cart)
                                 ->destroy();
                         });
                     }),
             ])
             ->defaultSort('updated_at', 'desc')
-            ->poll(fn () => config('filament-cart.polling_interval', 30) . 's')
+            ->poll(fn (): string => self::resolvePollingInterval())
             ->striped();
     }
 }

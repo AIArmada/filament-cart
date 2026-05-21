@@ -9,12 +9,19 @@ use AIArmada\Cart\Conditions\CartCondition as BaseCartCondition;
 use AIArmada\Cart\Conditions\Pipeline\ConditionPipeline;
 use AIArmada\Cart\Conditions\Pipeline\ConditionPipelineContext;
 use AIArmada\Cart\Models\CartItem as BaseCartItem;
+use AIArmada\CommerceSupport\Support\OwnerContext;
+use AIArmada\FilamentCart\Events\CartSnapshotSynced;
+use AIArmada\FilamentCart\Events\HighValueCartDetected;
 use AIArmada\FilamentCart\Models\Cart;
 use AIArmada\FilamentCart\Models\CartCondition;
 use AIArmada\FilamentCart\Models\CartItem;
+use DateTimeInterface;
+use Illuminate\Database\Eloquent\Model as EloquentModel;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class NormalizedCartSynchronizer
 {
@@ -25,18 +32,26 @@ class NormalizedCartSynchronizer
             $instance = $cart->instance();
 
             $owner = Cart::resolveCurrentOwner();
-            $ownerKey = Cart::resolveOwnerKey($owner);
 
             $items = $cart->getItems();
             $conditions = $cart->getStoredConditions();
+            $metadata = $cart->getAllMetadata();
 
             $currency = $this->resolveCurrency();
+
+            if (Cart::ownerScopingEnabled()) {
+                OwnerContext::assertResolvedOrExplicitGlobal(
+                    $owner,
+                    Cart::class . ' requires an owner context or explicit global context.',
+                );
+            }
 
             $cartModel = Cart::query()->forOwner($owner)->firstOrNew([
                 'identifier' => $identifier,
                 'instance' => $instance,
-                'owner_key' => $ownerKey,
             ]);
+
+            $previousTotal = $cartModel->exists ? (int) $cartModel->getOriginal('total') : 0;
 
             if (Cart::ownerScopingEnabled() && $owner !== null) {
                 $cartModel->assignOwner($owner);
@@ -44,8 +59,12 @@ class NormalizedCartSynchronizer
 
             $cartModel->items = $items->isEmpty() ? null : $items->toArray();
             $cartModel->conditions = $conditions->isEmpty() ? null : $conditions->toArray();
+            $cartModel->metadata = $metadata === [] ? null : $metadata;
             $cartModel->items_count = $cart->countItems();
             $cartModel->quantity = $cart->getTotalQuantity();
+            $cartModel->last_activity_at = $this->resolveLastActivityAt($cart, $metadata, $cartModel->last_activity_at);
+            $cartModel->checkout_started_at = $this->resolveMetadataTimestamp($metadata, 'checkout_started_at', $cartModel->checkout_started_at);
+            $cartModel->checkout_abandoned_at = $this->resolveMetadataTimestamp($metadata, 'checkout_abandoned_at', $cartModel->checkout_abandoned_at);
             $pipeline = new ConditionPipeline;
             $pipelineResult = $pipeline->process(new ConditionPipelineContext($cart, $conditions));
 
@@ -54,7 +73,31 @@ class NormalizedCartSynchronizer
             $cartModel->total = $pipelineResult->total();
             $cartModel->savings = max(0, $subtotalWithoutConditions - $cartModel->total);
             $cartModel->currency = $currency;
+            $hasMaterialChanges = ! $cartModel->exists || $cartModel->isDirty([
+                'items',
+                'conditions',
+                'metadata',
+                'items_count',
+                'quantity',
+                'subtotal',
+                'total',
+                'savings',
+                'currency',
+                'last_activity_at',
+                'checkout_started_at',
+                'checkout_abandoned_at',
+            ]);
             $cartModel->save();
+
+            if ($hasMaterialChanges) {
+                event(CartSnapshotSynced::fromCart($cartModel));
+            }
+
+            $highValueThreshold = (int) config('filament-cart.analytics.high_value_threshold_minor', 10000);
+
+            if ($highValueThreshold > 0 && $previousTotal < $highValueThreshold && $cartModel->total >= $highValueThreshold) {
+                event(HighValueCartDetected::fromCart($cartModel));
+            }
 
             $itemModels = $this->syncItems($cartModel, $items);
             $this->syncConditions($cartModel, $conditions, $itemModels, $items->all());
@@ -65,24 +108,57 @@ class NormalizedCartSynchronizer
      * Delete the normalized cart representation from database
      * This is called when the cart is destroyed or cleared
      */
-    public function deleteNormalizedCart(string $identifier, string $instance): void
-    {
-        $owner = Cart::resolveCurrentOwner();
-        $ownerKey = Cart::resolveOwnerKey($owner);
+    public function deleteNormalizedCart(
+        string $identifier,
+        string $instance,
+        ?string $ownerType = null,
+        string | int | null $ownerId = null,
+    ): void {
+        $hasExplicitOwnerTuple = func_num_args() >= 3;
 
-        $cartModel = Cart::query()->forOwner($owner)
-            ->where('identifier', $identifier)
-            ->where('instance', $instance)
-            ->where('owner_key', $ownerKey)
-            ->first();
+        $owner = $hasExplicitOwnerTuple
+            ? OwnerContext::fromTypeAndId($ownerType, $ownerId)
+            : Cart::resolveCurrentOwner();
 
-        if (! $cartModel) {
+        $runDelete = function (?EloquentModel $scopedOwner) use ($identifier, $instance): void {
+            $cartModel = Cart::query()->forOwner($scopedOwner)
+                ->where('identifier', $identifier)
+                ->where('instance', $instance)
+                ->first();
+
+            if (! $cartModel) {
+                return;
+            }
+
+            CartCondition::query()->where('cart_id', $cartModel->id)->delete();
+            CartItem::query()->where('cart_id', $cartModel->id)->delete();
+            $cartModel->delete();
+        };
+
+        if (Cart::ownerScopingEnabled() && $hasExplicitOwnerTuple && $ownerType === null && $ownerId === null) {
+            OwnerContext::withOwner(null, function () use ($runDelete): void {
+                $runDelete(null);
+            });
+
             return;
         }
 
-        CartCondition::query()->where('cart_id', $cartModel->id)->delete();
-        CartItem::query()->where('cart_id', $cartModel->id)->delete();
-        $cartModel->delete();
+        if (Cart::ownerScopingEnabled() && $hasExplicitOwnerTuple) {
+            OwnerContext::withOwner($owner, function () use ($owner, $runDelete): void {
+                $runDelete($owner);
+            });
+
+            return;
+        }
+
+        if (Cart::ownerScopingEnabled()) {
+            OwnerContext::assertResolvedOrExplicitGlobal(
+                $owner,
+                Cart::class . ' requires an owner context or explicit global context.',
+            );
+        }
+
+        $runDelete($owner);
     }
 
     /**
@@ -234,5 +310,52 @@ class NormalizedCartSynchronizer
         }
 
         return $associatedModel ? get_class($associatedModel) : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    private function resolveLastActivityAt(BaseCart $cart, array $metadata, ?DateTimeInterface $existingLastActivityAt): ?Carbon
+    {
+        if (array_key_exists('last_activity_at', $metadata)) {
+            return $this->parseTimestamp($metadata['last_activity_at']);
+        }
+
+        return $this->parseTimestamp($cart->getUpdatedAt())
+            ?? $this->parseTimestamp($existingLastActivityAt)
+            ?? $this->parseTimestamp($cart->getCreatedAt());
+    }
+
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    private function resolveMetadataTimestamp(array $metadata, string $key, ?DateTimeInterface $existingValue): ?Carbon
+    {
+        if (array_key_exists($key, $metadata)) {
+            return $this->parseTimestamp($metadata[$key]);
+        }
+
+        return $this->parseTimestamp($existingValue);
+    }
+
+    private function parseTimestamp(mixed $value): ?Carbon
+    {
+        if ($value instanceof Carbon) {
+            return $value;
+        }
+
+        if ($value instanceof DateTimeInterface) {
+            return Carbon::instance($value);
+        }
+
+        if (! is_string($value) || $value === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (Throwable) {
+            return null;
+        }
     }
 }

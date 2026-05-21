@@ -4,16 +4,21 @@ declare(strict_types=1);
 
 namespace AIArmada\FilamentCart\Resources\ConditionResource\Tables;
 
-use Akaunting\Money\Money;
+use AIArmada\Cart\Models\Condition;
+use AIArmada\CommerceSupport\Support\MoneyFormatter;
+use AIArmada\FilamentCart\Resources\ConditionResource;
+use AIArmada\FilamentCart\Services\OwnerActionGuard;
+use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteAction;
-use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Collection;
+use RuntimeException;
 
 final class ConditionsTable
 {
@@ -64,11 +69,11 @@ final class ConditionsTable
                     ->badge()
                     ->color(fn (string $state): string => str_contains($state, '%') ? 'info' : 'secondary')
                     ->formatStateUsing(fn (?string $state) => match (true) {
-                        $state === null => Money::MYR(0),
+                        $state === null => self::formatMoney(0),
                         str_contains($state, '%') => $state,
                         default => (str_starts_with($state, '+')
-                            ? '+' . Money::MYR(mb_ltrim($state, '+'))
-                            : Money::MYR($state))
+                            ? '+' . self::formatMoney((int) mb_ltrim($state, '+'))
+                            : self::formatMoney((int) $state))
                     })
                     ->sortable(),
 
@@ -206,15 +211,37 @@ final class ConditionsTable
                     ]),
             ])
             ->actions([
-                EditAction::make(),
-                DeleteAction::make(),
+                EditAction::make()
+                    ->visible(fn (Condition $record): bool => ConditionResource::canEdit($record)),
+                DeleteAction::make()
+                    ->visible(fn (Condition $record): bool => ConditionResource::canDelete($record))
+                    ->using(function (Condition $record): void {
+                        OwnerActionGuard::authorizeStoredCondition($record)->delete();
+                    }),
             ])
             ->bulkActions([
                 BulkActionGroup::make([
-                    DeleteBulkAction::make(),
+                    BulkAction::make('deleteSelected')
+                        ->label('Delete Selected')
+                        ->requiresConfirmation()
+                        ->action(function (Collection $records): void {
+                            /** @var Collection<int|string, Condition> $records */
+                            foreach ($records as $record) {
+                                if (! ConditionResource::canDelete($record)) {
+                                    throw new RuntimeException('Shared global conditions can only be modified from explicit global context.');
+                                }
+
+                                OwnerActionGuard::authorizeStoredCondition($record)->delete();
+                            }
+                        }),
                 ]),
             ])
             ->defaultSort('name')
             ->poll('30s');
+    }
+
+    private static function formatMoney(int $amount): string
+    {
+        return MoneyFormatter::formatMinor($amount, (string) config('cart.money.default_currency', 'USD'));
     }
 }

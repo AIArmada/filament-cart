@@ -4,12 +4,10 @@ declare(strict_types=1);
 
 namespace AIArmada\FilamentCart\Actions;
 
-use AIArmada\Cart\Conditions\CartCondition;
 use AIArmada\Cart\Contracts\RulesFactoryInterface;
 use AIArmada\Cart\Models\Condition;
 use AIArmada\CommerceSupport\Support\OwnerContext;
-use AIArmada\FilamentCart\Models\Cart as CartModel;
-use AIArmada\FilamentCart\Services\CartInstanceManager;
+use AIArmada\FilamentCart\Services\OwnerActionGuard;
 use Exception;
 use Filament\Actions\Action;
 use Filament\Forms\Components\KeyValue;
@@ -49,23 +47,12 @@ final class ApplyConditionAction extends Action
                     ->helperText('Override the default condition name if needed'),
             ])
             ->action(function (array $data, $record, $livewire): void {
-                // Get the cart record - either directly or from relation manager
-                $cart = $record instanceof CartModel ? $record : $livewire->getOwnerRecord();
-
-                $conditionModel = self::getScopedConditionQuery(forItems: false)
-                    ->findOrFail($data['condition_id']);
+                $cart = OwnerActionGuard::resolveCartRecord($record, $livewire);
                 $customName = ! empty($data['custom_name']) ? $data['custom_name'] : null;
 
                 try {
-                    // Get a cart instance for this specific cart record
-                    $cartInstance = app(CartInstanceManager::class)
-                        ->resolve($cart->instance, $cart->identifier);
-
-                    // Create condition from stored definition
-                    $condition = $conditionModel->createCondition($customName);
-
-                    // Apply condition to cart
-                    $cartInstance->addCondition($condition);
+                    $action = app(ApplyConditionToCartAction::class);
+                    $condition = $action->apply($cart, (string) $data['condition_id'], $customName);
 
                     Notification::make()
                         ->title('Condition Applied')
@@ -112,31 +99,18 @@ final class ApplyConditionAction extends Action
                     ->helperText('Override the default condition name if needed'),
             ])
             ->action(function (array $data, $record): void {
-                $conditionModel = self::getScopedConditionQuery(forItems: true)
-                    ->findOrFail($data['condition_id']);
                 $customName = ! empty($data['custom_name']) ? $data['custom_name'] : null;
+                $cart = OwnerActionGuard::resolveCartRecord($record->cart ?? null);
 
                 try {
-                    // Get the cart and item
-                    $cart = $record->cart;
-                    $cartInstance = app(CartInstanceManager::class)
-                        ->resolve($cart->instance, $cart->identifier);
+                    $action = app(ApplyConditionToCartAction::class);
+                    $condition = $action->applyToItem($cart, $record->item_id, (string) $data['condition_id'], $customName);
 
-                    // Create condition from stored definition
-                    $condition = $conditionModel->createCondition($customName);
-
-                    // Apply condition to specific item
-                    $success = $cartInstance->addItemCondition($record->item_id, $condition);
-
-                    if ($success) {
-                        Notification::make()
-                            ->title('Item Condition Applied')
-                            ->body("The '{$condition->getName()}' condition has been applied to the item.")
-                            ->success()
-                            ->send();
-                    } else {
-                        throw new Exception('Item not found in cart');
-                    }
+                    Notification::make()
+                        ->title('Item Condition Applied')
+                        ->body("The '{$condition->getName()}' condition has been applied to the item.")
+                        ->success()
+                        ->send();
 
                 } catch (Exception $e) {
                     Notification::make()
@@ -175,31 +149,22 @@ final class ApplyConditionAction extends Action
             $query->forItems();
         }
 
-        if (! (bool) config('filament-cart.owner.enabled', false)) {
+        if (! Condition::ownerScopingEnabled()) {
             return $query;
         }
 
         $owner = OwnerContext::resolve();
-        $includeGlobal = (bool) config('filament-cart.owner.include_global', false);
+
+        OwnerContext::assertResolvedOrExplicitGlobal(
+            $owner,
+            Condition::class . ' requires an owner context or explicit global context.',
+        );
 
         if ($owner === null) {
-            return $query->whereNull('owner_type')->whereNull('owner_id');
+            return $query->globalOnly();
         }
 
-        return $query->where(function (Builder $builder) use ($owner, $includeGlobal): void {
-            $builder->where(function (Builder $inner) use ($owner): void {
-                $inner->where('owner_type', $owner->getMorphClass())
-                    ->where('owner_id', (string) $owner->getKey());
-            });
-
-            if (! $includeGlobal) {
-                return;
-            }
-
-            $builder->orWhere(function (Builder $inner): void {
-                $inner->whereNull('owner_type')->whereNull('owner_id');
-            });
-        });
+        return $query->forOwner($owner, (bool) config('cart.owner.include_global', false));
     }
 
     /**
@@ -303,67 +268,11 @@ final class ApplyConditionAction extends Action
                     ->default([]),
             ])
             ->action(function (array $data, $record, $livewire): void {
-                // Get the cart record - either directly or from relation manager
-                $cart = $record instanceof CartModel ? $record : $livewire->getOwnerRecord();
+                $cart = OwnerActionGuard::resolveCartRecord($record, $livewire);
 
                 try {
-                    // Get a cart instance for this specific cart record
-                    $cartInstance = app(CartInstanceManager::class)
-                        ->resolve($cart->instance, $cart->identifier);
-
-                    $rulesDefinition = Condition::normalizeRulesDefinition(
-                        $data['dynamic_rules'] ?? null,
-                        ! empty($data['is_dynamic'])
-                    );
-
-                    $rules = null;
-                    if ($rulesDefinition !== null) {
-                        $rulesFactory = app(RulesFactoryInterface::class);
-                        $rules = [];
-
-                        foreach ($rulesDefinition['factory_keys'] as $factoryKey) {
-                            if (! $rulesFactory->canCreateRules($factoryKey)) {
-                                throw new Exception("Unsupported rule factory key [{$factoryKey}]");
-                            }
-
-                            $rules = array_merge(
-                                $rules,
-                                $rulesFactory->createRules($factoryKey, ['context' => $rulesDefinition['context']])
-                            );
-                        }
-                    }
-
-                    // Merge custom attributes with source marker
-                    $attributes = array_merge(
-                        $data['attributes'] ?? [],
-                        ['source' => 'custom']
-                    );
-
-                    // Create condition manually
-                    $condition = new CartCondition(
-                        name: $data['name'],
-                        type: $data['type'],
-                        target: $data['target'],
-                        value: $data['value'],
-                        attributes: $attributes,
-                        order: (int) $data['order'],
-                        rules: $rules
-                    );
-
-                    // Apply or register the condition based on dynamic rules
-                    if ($rulesDefinition !== null) {
-                        $factoryKeys = $rulesDefinition['factory_keys'];
-
-                        $cartInstance->registerDynamicCondition(
-                            $condition,
-                            ruleFactoryKey: count($factoryKeys) === 1 ? $factoryKeys[0] : $factoryKeys,
-                            metadata: [
-                                'context' => $rulesDefinition['context'],
-                            ]
-                        );
-                    } else {
-                        $cartInstance->addCondition($condition);
-                    }
+                    $action = app(ApplyConditionToCartAction::class);
+                    $condition = $action->applyCustom($cart, $data);
 
                     Notification::make()
                         ->title('Custom Condition Applied')
