@@ -1,10 +1,10 @@
 ---
-title: Resources
+title: Usage
 ---
 
-# Resources
+# Usage
 
-Filament Cart registers only cart-management resources.
+Filament Cart usage centers on cart-management resources and the operational read models they expose.
 
 ## CartResource
 
