@@ -2,25 +2,24 @@
 
 declare(strict_types=1);
 
-namespace AIArmada\FilamentCart\Resources\ConditionResource\Tables;
+namespace AIArmada\FilamentCart\Resources\CartResource\Tables;
 
-use AIArmada\Cart\Models\Condition;
-use AIArmada\CommerceSupport\Support\OwnerWriteGuard;
-use AIArmada\FilamentCart\Resources\ConditionResource;
+use AIArmada\Cart\Actions\RemoveStoredConditions;
+use AIArmada\Cart\Snapshots\CartSnapshotCondition;
+use AIArmada\FilamentCart\Actions\RemoveConditionAction;
 use AIArmada\FilamentCart\Support\ConditionTargetLabels;
+use Exception;
 use Filament\Actions\BulkAction;
 use Filament\Actions\BulkActionGroup;
-use Filament\Actions\DeleteAction;
-use Filament\Actions\EditAction;
+use Filament\Notifications\Notification;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Collection;
-use RuntimeException;
 
-final class ConditionsTable
+final class CartSnapshotConditionsTable
 {
     public static function configure(Table $table): Table
     {
@@ -32,15 +31,10 @@ final class ConditionsTable
                     ->sortable()
                     ->weight('medium'),
 
-                TextColumn::make('display_name')
-                    ->label('Display Name')
-                    ->searchable()
-                    ->sortable(),
-
                 TextColumn::make('type')
                     ->label('Type')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
+                    ->color(fn (?string $state): string => match ($state) {
                         'discount' => 'success',
                         'tax', 'fee', 'surcharge' => 'warning',
                         'shipping' => 'info',
@@ -62,8 +56,7 @@ final class ConditionsTable
                     ->label('Value')
                     ->alignEnd()
                     ->badge()
-                    ->color(fn (string $state): string => str_contains($state, '%') ? 'info' : 'secondary')
-                    ->formatStateUsing(fn (?string $state, Condition $record): string => $record->formatted_value)
+                    ->color(fn (?string $state): string => is_string($state) && str_contains($state, '%') ? 'info' : 'secondary')
                     ->sortable(),
 
                 TextColumn::make('operator')
@@ -106,7 +99,6 @@ final class ConditionsTable
                     ->boolean()
                     ->trueIcon(Heroicon::OutlinedGlobeAsiaAustralia)
                     ->falseIcon(Heroicon::OutlinedMinusCircle)
-                    ->tooltip('Applied automatically to every cart when active')
                     ->toggleable(),
 
                 TextColumn::make('parsed_value')
@@ -118,24 +110,8 @@ final class ConditionsTable
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
 
-                IconColumn::make('is_active')
-                    ->label('Active')
-                    ->boolean()
-                    ->trueIcon(Heroicon::OutlinedCheckCircle)
-                    ->falseIcon(Heroicon::OutlinedXCircle)
-                    ->trueColor('success')
-                    ->falseColor('gray'),
-
-                TextColumn::make('created_at')
-                    ->label('Created')
-                    ->dateTime()
-                    ->sortable()
-                    ->toggleable(isToggledHiddenByDefault: true),
-
-                TextColumn::make('updated_at')
-                    ->label('Updated')
-                    ->dateTime()
-                    ->sortable()
+                TextColumn::make('cart_item_id')
+                    ->label('Item')
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
             ->filters([
@@ -152,93 +128,56 @@ final class ConditionsTable
 
                 SelectFilter::make('target')
                     ->options(ConditionTargetLabels::options()),
-
-                SelectFilter::make('is_active')
-                    ->label('Status')
-                    ->options([
-                        1 => 'Active',
-                        0 => 'Inactive',
-                    ]),
-
-                SelectFilter::make('is_discount')
-                    ->label('Discount')
-                    ->options([
-                        1 => 'Discounts Only',
-                        0 => 'Non-Discounts Only',
-                    ]),
-
-                SelectFilter::make('is_percentage')
-                    ->label('Percentage-Based')
-                    ->options([
-                        1 => 'Percentage Only',
-                        0 => 'Fixed Amount Only',
-                    ]),
-
-                SelectFilter::make('is_dynamic')
-                    ->label('Dynamic Conditions')
-                    ->options([
-                        1 => 'Dynamic Only',
-                        0 => 'Static Only',
-                    ]),
-
-                SelectFilter::make('is_charge')
-                    ->label('Charges')
-                    ->options([
-                        1 => 'Charges Only',
-                        0 => 'Non-Charges Only',
-                    ]),
-
-                SelectFilter::make('is_global')
-                    ->label('Global')
-                    ->options([
-                        1 => 'Global Only',
-                        0 => 'Non-Global Only',
-                    ]),
             ])
             ->recordActions([
-                EditAction::make()
-                    ->visible(fn (Condition $record): bool => ConditionResource::canEdit($record)),
-                DeleteAction::make()
-                    ->visible(fn (Condition $record): bool => ConditionResource::canDelete($record))
-                    ->using(function (Condition $record): void {
-                        self::authorizeCondition($record)->delete();
-                    }),
+                RemoveConditionAction::make(),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    BulkAction::make('deleteSelected')
-                        ->label('Delete Selected')
+                    BulkAction::make('removeSelected')
+                        ->label('Remove Selected')
+                        ->icon(Heroicon::OutlinedTrash)
+                        ->color('danger')
                         ->requiresConfirmation()
                         ->action(function (Collection $records): void {
-                            /** @var Collection<int|string, Condition> $records */
-                            foreach ($records as $record) {
-                                if (! ConditionResource::canDelete($record)) {
-                                    throw new RuntimeException('Shared global conditions can only be modified from explicit global context.');
-                                }
+                            /** @var Collection<int|string, CartSnapshotCondition> $records */
+                            $removed = 0;
+                            $failed = 0;
 
-                                self::authorizeCondition($record)->delete();
+                            foreach ($records->chunk(100) as $chunk) {
+                                /** @var CartSnapshotCondition $record */
+                                foreach ($chunk as $record) {
+                                    try {
+                                        if (app(RemoveStoredConditions::class)->removeSnapshotCondition($record)) {
+                                            $removed++;
+                                        } else {
+                                            $failed++;
+                                        }
+                                    } catch (Exception) {
+                                        $failed++;
+                                    }
+                                }
                             }
+
+                            if ($failed > 0) {
+                                Notification::make()
+                                    ->title('Some conditions could not be removed')
+                                    ->body("Removed {$removed}, failed {$failed}.")
+                                    ->warning()
+                                    ->send();
+
+                                return;
+                            }
+
+                            Notification::make()
+                                ->title('Conditions Removed')
+                                ->body("Removed {$removed} " . str('condition')->plural($removed) . '.')
+                                ->success()
+                                ->send();
                         }),
                 ]),
             ])
-            ->defaultSort('name')
+            ->defaultSort('order')
             ->poll('30s');
-    }
-
-    private static function authorizeCondition(Condition $condition): Condition
-    {
-        if (! Condition::ownerScopingEnabled()) {
-            return $condition;
-        }
-
-        /** @var Condition $validated */
-        $validated = OwnerWriteGuard::findOrFailForOwner(
-            Condition::class,
-            (string) $condition->getKey(),
-            includeGlobal: false,
-            message: 'Condition is not accessible in the current owner scope.',
-        );
-
-        return $validated;
     }
 }
