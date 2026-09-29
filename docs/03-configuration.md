@@ -35,15 +35,6 @@ the core package:
 'resources' => [
     'navigation_sort' => [
         'carts' => 30,
-        'cart_items' => 31,
-        'conditions' => 33,
-    ],
-],
-
-'pages' => [
-    'navigation_sort' => [
-        'dashboard' => 1,
-        'live_dashboard' => 5,
     ],
 ],
 ```

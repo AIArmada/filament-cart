@@ -8,15 +8,21 @@ Filament Cart widgets focus on live cart operations.
 
 ## CartStatsWidget
 
-Stats overview on the `CartDashboard` page showing active carts (with the count of
-those that have items), checkouts in progress, recent abandonments (with a 24h
-abandonment rate), and total cart value (with a high-value cart count).
+Displays active carts (with items count), checkouts in progress, recent abandonments with a 24h abandonment rate, and total cart value.
+
+## CartStatsOverviewWidget
+
+Displays active carts, cart value, checkout starts, and abandoned carts with a simple abandonment rate.
+
+## LiveStatsWidget
+
+Displays recent active carts, carts with items, checkouts in progress, recent abandonments, total value, and high-value cart counts.
+
+> **Note:** `CartStatsOverviewWidget` and `LiveStatsWidget` have been removed from the package. Use `CartStatsWidget` for cart statistics.
 
 ## RecentActivityWidget
 
-Footer widget on the `LiveDashboardPage`. Shows a recent activity table with
-columns for session identifier, item count, formatted value, and update time,
-with status values:
+Shows a recent activity table with status values:
 
 - `active`
 - `checkout`
@@ -24,8 +30,7 @@ with status values:
 
 ## AbandonedCartsWidget
 
-Footer widget on the `CartDashboard` page. Shows snapshots with
-`checkout_abandoned_at` set in the last seven days.
+Shows snapshots with `checkout_abandoned_at` set in the last seven days.
 
 ## Analytics widgets
 

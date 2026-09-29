@@ -8,13 +8,14 @@ Filament Cart monitoring is intentionally operational and lightweight.
 
 ## Live monitor
 
-`LiveDashboardPage` renders the `RecentActivityWidget` table: session identifier,
-status (`active` / `checkout` / `abandoned`), item count, formatted value, and
-last update.
+The live monitor shows:
 
-The aggregate counters (active carts, carts with items, checkouts in progress,
-recent abandonments, total cart value, high-value cart counts) live in
-`CartStatsWidget` on the `CartDashboard` page, not on the live monitor.
+- active carts,
+- carts with items,
+- checkouts in progress,
+- recent abandonments,
+- total cart value,
+- high-value cart counts.
 
 ## Abandonment command
 
